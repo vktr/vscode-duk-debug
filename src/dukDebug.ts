@@ -2,7 +2,7 @@
 
 import {DebugSession, InitializedEvent, TerminatedEvent, StoppedEvent, BreakpointEvent, OutputEvent, Thread, StackFrame, Scope, Source, Handles, Breakpoint} from 'vscode-debugadapter';
 import {DebugProtocol} from 'vscode-debugprotocol';
-import {readFileSync} from 'fs';
+import {readFileSync, writeFileSync} from 'fs';
 import {basename} from 'path';
 
 /**
@@ -13,31 +13,11 @@ export interface LaunchRequestArguments {
     program: string;
 }
 
-class DukDebugSession extends DebugSession {
+class DuktapeDebugSession extends DebugSession {
     private static THREAD_ID = 1;
-    
-    private _breakpointId = 1000;
-    private _currentLine = 0;
-
-    private get currentLine() : number {
-        return this._currentLine;
-    }
-
-    private set currentLine(line : number) {
-        this._currentLine = line;
-        this.sendEvent(new OutputEvent(`line: ${line}\n`));
-    }
-
-    private _sourceFile : string;
-    private _sourceLines = new Array<string>();
-    private _breakpoints = new Map<string, DebugProtocol.Breakpoint[]>();
-    private _variableHandles = new Handles<string>();
 
     public constructor() {
         super();
-
-        this.setDebuggerLinesStartAt1(false);
-        this.setDebuggerColumnsStartAt1(false);
     }
 
     protected initializeRequest(response : DebugProtocol.InitializeResponse, args : DebugProtocol.InitializeRequestArguments) : void {
@@ -48,11 +28,11 @@ class DukDebugSession extends DebugSession {
     }
     
     protected launchRequest(response : DebugProtocol.LaunchResponse, args : LaunchRequestArguments) : void {
-        this._sourceFile = args.program;
-        this.continueRequest(response, { threadId: DukDebugSession.THREAD_ID });        
+        this.sendEvent(new OutputEvent("Hello, World!"));
+        this.continueRequest(response, { threadId: DuktapeDebugSession.THREAD_ID });        
     }
     
-    protected setBreakPointsRequest(response : DebugProtocol.SetBreakpointsResponse, args : DebugProtocol.SetBreakpointsArguments) : void {
+    protected setBreakpointsRequest(response : DebugProtocol.SetBreakpointsResponse, args : DebugProtocol.SetBreakpointsArguments) : void {
         var path = args.source.path;
         var clientLines = args.lines;
         
@@ -66,7 +46,7 @@ class DukDebugSession extends DebugSession {
     protected threadsRequest(response : DebugProtocol.ThreadsResponse) : void {
         response.body = {
             threads: [
-                new Thread(DukDebugSession.THREAD_ID, "Duktape Thread #1")
+                new Thread(DuktapeDebugSession.THREAD_ID, "Duktape Thread #1")
             ]
         };
         
@@ -124,4 +104,4 @@ class DukDebugSession extends DebugSession {
     }
 }
 
-DebugSession.run(DukDebugSession);
+DebugSession.run(DuktapeDebugSession);
