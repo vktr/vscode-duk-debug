@@ -20,6 +20,10 @@ class DuktapeDebugSession extends DebugSession {
         super();
     }
 
+    public log(message : string) : void {
+        this.sendEvent(new OutputEvent(`${process.pid}: ${message}`));
+    }
+
     protected initializeRequest(response : DebugProtocol.InitializeResponse, args : DebugProtocol.InitializeRequestArguments) : void {
         this.sendEvent(new InitializedEvent());
 
@@ -28,7 +32,7 @@ class DuktapeDebugSession extends DebugSession {
     }
     
     protected launchRequest(response : DebugProtocol.LaunchResponse, args : LaunchRequestArguments) : void {
-        this.sendEvent(new OutputEvent("Hello, World!"));
+        this.log("Launching");
         this.continueRequest(response, { threadId: DuktapeDebugSession.THREAD_ID });        
     }
     
