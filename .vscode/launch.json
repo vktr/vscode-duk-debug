@@ -1,0 +1,35 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Launch Extension",
+            "type": "extensionHost",
+            "request": "launch",
+            "runtimeExecutable": "${execPath}",
+            "args": [
+                "--extensionDevelopmentPath=${workspaceRoot}"
+            ],
+            "sourceMaps": true,
+            "outDir": "${workspaceRoot}/out"
+        },
+        {
+            "name": "duk-debug server",
+            "type": "node",
+            "request": "launch",
+            "runtimeArgs": [ "--nolazy" ],
+            "program": "${workspaceRoot}/src/dukDebug.ts",
+            "stopOnEntry": false,
+            "args": [ "--server=4711" ],
+            "sourceMaps": true,
+            "outDir": "${workspaceRoot}/out",
+            "cwd": "${workspaceRoot}"
+        },
+        {
+            "name": "duk test",
+            "type": "duk",
+            "request": "launch",
+            "program": "${workspaceRoot}/tests/duk.js",
+            "stopOnEntry": true
+        }
+    ]
+}

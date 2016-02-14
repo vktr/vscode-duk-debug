@@ -1,0 +1,67 @@
+{
+    "name": "duk-debug",
+    "displayName": "Duktape debugger",
+    "version": "0.0.1",
+    "publisher": "vktr",
+    "description": "A Duktape debugger adapter for Visual Studio Code.",
+    "author": {
+        "name": "Viktor Elofsson"
+    },
+    "engines": {
+        "vscode": "^0.10.1"
+    },
+    "categories": [ "Debuggers" ],
+    "private": true,
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/vktr/vscode-duk-debug.git"
+    },
+    "bugs": {
+        "url": "https://github.com/vktr/vscode-duk-debug/issues"
+    },
+    "dependencies": {
+        "vscode-debugprotocol": "~1.6.0-pre4",
+        "vscode-debugadapter": "~1.6.0-pre8"
+    },
+    "devDependencies": {
+        "typescript": "^1.6.2",
+        "mocha": "^2.3.4"
+    },
+    "scripts": {
+        "prepublish": "tsc -p ./src",
+        "compile": "tsc -p ./src",
+        "watch": "tsc -w -p ./src",
+        "test": "node ./node_modules/mocha/bin/mocha -u tdd ./out/tests/"
+    },
+    "contributes": {
+        "debuggers": [
+            {
+                "type": "duk",
+                "label": "Duktape",
+                "enableBreakpointsFor": { "languageIds": [ "javascript" ] },
+                "program": "./out/dukDebug.js",
+                "runtime": "node",
+                "configurationAttributes": {
+                    "launch": {
+                        "required": [ "program" ],
+                        "properties": {
+                            "program": {
+                                "type": "string",
+                                "description": "Workspace path to a JavaScript file to debug.",
+                                "default": "main.js"
+                            }
+                        }
+                    }
+                },
+                "initialConfigurations": [
+                    {
+                        "name": "Launch",
+                        "type": "duk",
+                        "request": "launch",
+                        "program": "${workspaceRoot}/index.js"
+                    }
+                ]
+            }
+        ]
+    }
+}
