@@ -265,19 +265,33 @@ class DuktapeDebugSession extends DebugSession {
     protected variablesRequest(response : DebugProtocol.VariablesResponse, args : DebugProtocol.VariablesArguments) : void {
         this.log("variablesRequest");
 
-        const variables = [];
+        this._duk.getLocals();
+        this._duk.once("reply", (locals) => {
+            this.log(`locals=${JSON.stringify(locals)}`);
+
+            const variables = [];
         
-        response.body = {
-            variables: variables
-        };
-        
-        this.sendResponse(response);
+            response.body = {
+                variables: variables
+            };
+            
+            this.sendResponse(response);
+        });
     }
     
     protected continueRequest(response : DebugProtocol.ContinueResponse, args : DebugProtocol.ContinueArguments) : void {
         this.log("continueRequest");
 
         this._duk.resume();
+    }
+    
+    protected stepInRequest(response : DebugProtocol.StepInResponse, args : DebugProtocol.StepInArguments) : void {
+        this.log("stepInRequest");
+        
+        this._duk.stepIn();
+        this._duk.once("reply", () => {
+            this.sendResponse(response);
+        });
     }
     
     protected nextRequest(response : DebugProtocol.NextResponse, args : DebugProtocol.NextArguments) : void {

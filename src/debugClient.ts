@@ -91,6 +91,11 @@ export class DuktapeDebugClient extends EE.EventEmitter {
         var resume = { request: 0x13 };
         this._socket.write(JSON.stringify(resume) + "\n");
     }
+    
+    public stepIn() : void {
+        var step = { request: 0x14 };
+        this._socket.write(JSON.stringify(step) + "\n");
+    }
 
     public stepOver() : void {
         var step = { request: 0x15 };
