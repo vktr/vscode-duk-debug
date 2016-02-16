@@ -4,7 +4,7 @@ import {DebugSession, InitializedEvent, TerminatedEvent, StoppedEvent, Breakpoin
 import {DebugProtocol} from 'vscode-debugprotocol';
 import {readFileSync, writeFileSync} from 'fs';
 import {basename} from 'path';
-import {DuktapeDebugClient, StatusNotification, State} from './debugClient';
+import {DuktapeDebugClient, PrintNotification, StatusNotification, State} from './debugClient';
 
 /**
  * This interface should always match the schema found in the duk-debug extension manifest.
@@ -26,6 +26,7 @@ class DuktapeDebugSession extends DebugSession {
     private _duk : DuktapeDebugClient;
     private _firstStatus : boolean;
     private _frameHandles = new Handles<any>();
+    private _variableHandles = new Handles<any>();
     private _attachMode : boolean;
     private _needContinue : boolean;
     private _stopOnEntry : boolean;
@@ -35,7 +36,7 @@ class DuktapeDebugSession extends DebugSession {
         
         this.setDebuggerLinesStartAt1(true);
         
-        this._duk = new DuktapeDebugClient();
+        this._duk = new DuktapeDebugClient((d) => this.log(d));
         this._firstStatus = true;
     }
 
@@ -51,7 +52,8 @@ class DuktapeDebugSession extends DebugSession {
             this._duk.resume();
             this._duk.once("reply", () => {});
         }
-
+        
+        this._duk.on("statusNotification", (s) => { this._onStatusNotification(s); });
         this.sendResponse(response);
     }
 
@@ -78,7 +80,11 @@ class DuktapeDebugSession extends DebugSession {
         this.log(`_attach`);
 
         this._duk.connect(host, port);
-        this._duk.on("connect", () => {
+        this._duk.on("printNotification", (printNotification : PrintNotification) => {
+            this.log(`print: ${printNotification.Message}`);
+        });
+
+        this._duk.on("targetConnected", () => {
             this._initialize(response);
         })
     }
@@ -115,7 +121,7 @@ class DuktapeDebugSession extends DebugSession {
 
         switch (status.State) {
             case State.Paused:
-                this.sendEvent(new StoppedEvent("Duktape stopped.", DuktapeDebugSession.THREAD_ID));
+                this.sendEvent(new StoppedEvent("step", DuktapeDebugSession.THREAD_ID));
                 break;
         }
     }
@@ -137,9 +143,7 @@ class DuktapeDebugSession extends DebugSession {
             if (source.path) {
                 source.path = this.convertClientPathToDebugger(source.path);
             }
-            
-            this.log(`setBreakPointsRequest: updated source path: ${source.path}`);
-            
+
             response.body = {
                 breakpoints: []
             };
@@ -149,7 +153,7 @@ class DuktapeDebugSession extends DebugSession {
             var addBreakpoint = (i : number) => {
                 var sourceBreakpoint = args.breakpoints[i];
 
-                this._duk.addBreakpoint("duk-debug/index.js", sourceBreakpoint.line);
+                this._duk.addBreakpoint("project/index.js", sourceBreakpoint.line);
                 this._duk.once("reply", () => {
                     breakpointsAdded += 1;
 
@@ -198,43 +202,48 @@ class DuktapeDebugSession extends DebugSession {
             this.sendErrorResponse(response, 2014, "Unexpected thread identifier.");
             return;
         }
-        
+
         this._duk.getCallstack();
         this._duk.once("reply", (callstack) => {
             this.log(`Duk stack: ${JSON.stringify(callstack)}`);
             
-            var dukFrames = callstack.length / 4;
-            const frames = new Array<StackFrame>();
-            
-            this.log(`Parsing ${dukFrames} Duktape frames. Callstack length ${callstack.length}`);
-            
-            for (var i = 0; i < dukFrames; i++) {
-                var offset = i*4;
-                var dukFrame = {
-                     fileName: dukFrames[offset + 0],
-                     funcName: dukFrames[offset + 1],
-                     lineNumber: dukFrames[offset + 2],
-                     pc: dukFrames[offset + 3]
-                };
+            try {
+                var dukFrames = Math.ceil(callstack.length / 4);
+                const frames = new Array<StackFrame>();
                 
-                const frameReference = this._frameHandles.create(dukFrame);
-                var frame = new StackFrame(
-                    frameReference,
-                    dukFrame.funcName,
-                    dukFrame.fileName,
-                    dukFrame.lineNumber,
-                    0);
+                this.log(`Parsing ${dukFrames} Duktape frames. Callstack length ${callstack.length}`);
+                
+                for (var i = 0; i < dukFrames; i++) {
+                    var offset = i*4;
+                    
+                    this.log(`offset=${offset}`);
+                    
+                    const fileName = callstack[offset + 0];
+                    const funcName = callstack[offset + 1];
+                    const lineNumber = callstack[offset + 2];
+                    
+                    this.log(`frame - fileName=${fileName}, funcName=${funcName}, lineNumber=${lineNumber}`);
 
-                frames.push(frame);
+                    var frame = new StackFrame(
+                        i,
+                        funcName,
+                        new Source(basename(fileName), "C:\\Code\\duk-debug-test\\project\\index.js"),
+                        this.convertDebuggerLineToClient(lineNumber),
+                        0);
+
+                    frames.push(frame);
+                }
+                
+                this.log(`Sending ${frames.length} frames.`);
+
+                response.body = {
+                    stackFrames: frames
+                };
+
+                this.sendResponse(response);
+            } catch (error) {
+                this.log(`Error: ${error}`);
             }
-            
-            this.log(`Sending ${frames.length} frames.`);
-
-            response.body = {
-                stackFrames: frames
-            };
-
-            this.sendResponse(response);
         });
     }
     
@@ -245,9 +254,11 @@ class DuktapeDebugSession extends DebugSession {
         const scopes = new Array<Scope>();
         
         response.body = {
-            scopes: scopes
+            scopes: [
+                new Scope("Locals", this._variableHandles.create("local_" + frameReference), false)
+            ]
         };
-        
+
         this.sendResponse(response);
     }
     
@@ -266,13 +277,16 @@ class DuktapeDebugSession extends DebugSession {
     protected continueRequest(response : DebugProtocol.ContinueResponse, args : DebugProtocol.ContinueArguments) : void {
         this.log("continueRequest");
 
-        this._duk.resume(() => {
-            this.sendResponse(response);
-        });
+        this._duk.resume();
     }
     
     protected nextRequest(response : DebugProtocol.NextResponse, args : DebugProtocol.NextArguments) : void {
         this.log("nextRequest");
+        
+        this._duk.stepOver();
+        this._duk.once("reply", () => {
+            this.sendResponse(response);
+        });
     }
     
     protected evaluateRequest(response : DebugProtocol.EvaluateResponse, args : DebugProtocol.EvaluateArguments) : void {
