@@ -51,6 +51,19 @@
                                 "default": "main.js"
                             }
                         }
+                    },
+                    "attach": {
+                        "required": [ "host", "port" ],
+                        "properties": {
+                            "host": {
+                                "type": "string",
+                                "default": "localhost"
+                            },
+                            "port": {
+                                "type": "number",
+                                "default": 9093
+                            }
+                        }
                     }
                 },
                 "initialConfigurations": [
@@ -59,6 +72,13 @@
                         "type": "duk",
                         "request": "launch",
                         "program": "${workspaceRoot}/index.js"
+                    },
+                    {
+                        "name": "Attach",
+                        "type": "duk",
+                        "request": "attach",
+                        "host": "localhost",
+                        "port": 9093
                     }
                 ]
             }

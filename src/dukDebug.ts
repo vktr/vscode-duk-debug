@@ -4,6 +4,7 @@ import {DebugSession, InitializedEvent, TerminatedEvent, StoppedEvent, Breakpoin
 import {DebugProtocol} from 'vscode-debugprotocol';
 import {readFileSync, writeFileSync} from 'fs';
 import {basename} from 'path';
+import {DuktapeDebugClient, StatusNotification, State} from './debugClient';
 
 /**
  * This interface should always match the schema found in the duk-debug extension manifest.
@@ -13,41 +14,172 @@ export interface LaunchRequestArguments {
     program: string;
 }
 
+export interface AttachRequestArguments {
+    host: string;
+    port: number;
+}
+
 class DuktapeDebugSession extends DebugSession {
     private static THREAD_ID = 1;
+    
+    private _adapterId : String;
+    private _duk : DuktapeDebugClient;
+    private _firstStatus : boolean;
+    private _frameHandles = new Handles<any>();
+    private _attachMode : boolean;
+    private _needContinue : boolean;
+    private _stopOnEntry : boolean;
 
     public constructor() {
         super();
+        
+        this.setDebuggerLinesStartAt1(true);
+        
+        this._duk = new DuktapeDebugClient();
+        this._firstStatus = true;
     }
 
     public log(message : string) : void {
-        this.sendEvent(new OutputEvent(`${process.pid}: ${message}`));
+        this.sendEvent(new OutputEvent(`${process.pid}: ${message}\r\n`));
+    }
+    
+    protected configurationDoneRequest(response : DebugProtocol.ConfigurationDoneResponse, args : DebugProtocol.ConfigurationDoneArguments) : void {
+        this.log("configurationDoneRequest");
+        
+        if (this._needContinue) {
+            this._needContinue = false;
+            this._duk.resume();
+            this._duk.once("reply", () => {});
+        }
+
+        this.sendResponse(response);
     }
 
     protected initializeRequest(response : DebugProtocol.InitializeResponse, args : DebugProtocol.InitializeRequestArguments) : void {
-        this.sendEvent(new InitializedEvent());
+        this.log(`initializeRequest: adapterId: ${args.adapterID}`);
+        this._adapterId = args.adapterID;
+        
+        response.body.supportsConfigurationDoneRequest = true;        
+        this.sendResponse(response);
+    }
 
-        response.body.supportsConfigurationDoneRequest = true;
-        this.sendResponse(response);
-    }
-    
     protected launchRequest(response : DebugProtocol.LaunchResponse, args : LaunchRequestArguments) : void {
-        this.log("Launching");
-        this.continueRequest(response, { threadId: DuktapeDebugSession.THREAD_ID });        
+        this.log("launchRequest");
+        this.sendErrorResponse(response, 1, "Launch not implemented.");
     }
     
-    protected setBreakpointsRequest(response : DebugProtocol.SetBreakpointsResponse, args : DebugProtocol.SetBreakpointsArguments) : void {
-        var path = args.source.path;
-        var clientLines = args.lines;
+    protected attachRequest(response : DebugProtocol.AttachResponse, args : AttachRequestArguments) : void {
+        this.log(`attachRequest - host=${args.host}, port=${args.port}`);
+        this._attachMode = true;
+        this._attach(response, args.host, args.port);
+    }
+    
+    private _attach(response : DebugProtocol.Response, host : string, port : number) : void {
+        this.log(`_attach`);
+
+        this._duk.connect(host, port);
+        this._duk.on("connect", () => {
+            this._initialize(response);
+        })
+    }
+    
+    private _initialize(response : DebugProtocol.Response) : void {
+        this.log(`_initialize`);
+
+        // Get the first status notification
+        this._duk.once("statusNotification", (status : StatusNotification) => {
+            this.log(`Got first StatusNotification`);
+            this.sendResponse(response);
+            this._startInitialize(status.State !== State.Running);
+        });
+    }
+    
+    private _startInitialize(stopped : boolean) : void {
+        this.log(`_startInitialize: stopped=${stopped}`);
+        this.sendEvent(new InitializedEvent());
         
-        response.body = {
-            breakpoints: []
-        };
+        if (this._attachMode) {
+            this._stopOnEntry = stopped;
+        }
         
-        this.sendResponse(response);
+        if (this._stopOnEntry) {
+            this.log("Sending stop-on-entry.");
+            this.sendEvent(new StoppedEvent("Stop on entry", DuktapeDebugSession.THREAD_ID));
+        } else {
+            this._needContinue = true;
+        }
+    }
+    
+    private _onStatusNotification(status : StatusNotification) : void {
+        this.log(`onStatusNotification: ${JSON.stringify(status)}`);
+
+        switch (status.State) {
+            case State.Paused:
+                this.sendEvent(new StoppedEvent("Duktape stopped.", DuktapeDebugSession.THREAD_ID));
+                break;
+        }
+    }
+    
+    protected setBreakPointsRequest(response : DebugProtocol.SetBreakpointsResponse, args : DebugProtocol.SetBreakpointsArguments) : void {
+        this.log(`setBreakPointsRequest: ${JSON.stringify(args.source)} ${JSON.stringify(args.breakpoints)}`);
+
+        this._duk.listBreakpoints();
+        this._duk.once("reply", (dukArgs) => {
+            this.log(`Duktape breakpoints: ${JSON.stringify(dukArgs)}`);
+            
+            for (let b of args.breakpoints) {
+                b.line = this.convertClientLineToDebugger(b.line);
+                b.column = typeof b.column === 'number' ? this.convertClientColumnToDebugger(b.column) : 0;
+            }
+            
+            const source = args.source;
+            
+            if (source.path) {
+                source.path = this.convertClientPathToDebugger(source.path);
+            }
+            
+            this.log(`setBreakPointsRequest: updated source path: ${source.path}`);
+            
+            response.body = {
+                breakpoints: []
+            };
+
+            var breakpointsAdded = 0;
+            
+            var addBreakpoint = (i : number) => {
+                var sourceBreakpoint = args.breakpoints[i];
+
+                this._duk.addBreakpoint("duk-debug/index.js", sourceBreakpoint.line);
+                this._duk.once("reply", () => {
+                    breakpointsAdded += 1;
+
+                    var bp = new Breakpoint(
+                        true,
+                        sourceBreakpoint.line);
+
+                    response.body.breakpoints.push(bp);
+                    
+                    if (args.breakpoints.length === breakpointsAdded) {
+                        this.log("all breakpoints added");
+                        this.sendResponse(response);
+                    } else {
+                        addBreakpoint(breakpointsAdded);
+                    }
+                });
+                
+            };
+
+            try {
+                addBreakpoint(breakpointsAdded);                
+            } catch (error) {
+                this.log(`Error when adding breakpoint: ${error}`);
+            }
+        });
     }
     
     protected threadsRequest(response : DebugProtocol.ThreadsResponse) : void {
+        this.log("threadsRequest");
+
         response.body = {
             threads: [
                 new Thread(DuktapeDebugSession.THREAD_ID, "Duktape Thread #1")
@@ -58,16 +190,57 @@ class DuktapeDebugSession extends DebugSession {
     }
     
     protected stackTraceRequest(response : DebugProtocol.StackTraceResponse, args : DebugProtocol.StackTraceArguments) : void {
-        const frames = new Array<StackFrame>();
+        this.log("stackTraceRequest");
         
-        response.body = {
-            stackFrames: frames
-        };
+        const threadId = args.threadId;
         
-        this.sendResponse(response);
+        if (threadId !== DuktapeDebugSession.THREAD_ID) {
+            this.sendErrorResponse(response, 2014, "Unexpected thread identifier.");
+            return;
+        }
+        
+        this._duk.getCallstack();
+        this._duk.once("reply", (callstack) => {
+            this.log(`Duk stack: ${JSON.stringify(callstack)}`);
+            
+            var dukFrames = callstack.length / 4;
+            const frames = new Array<StackFrame>();
+            
+            this.log(`Parsing ${dukFrames} Duktape frames. Callstack length ${callstack.length}`);
+            
+            for (var i = 0; i < dukFrames; i++) {
+                var offset = i*4;
+                var dukFrame = {
+                     fileName: dukFrames[offset + 0],
+                     funcName: dukFrames[offset + 1],
+                     lineNumber: dukFrames[offset + 2],
+                     pc: dukFrames[offset + 3]
+                };
+                
+                const frameReference = this._frameHandles.create(dukFrame);
+                var frame = new StackFrame(
+                    frameReference,
+                    dukFrame.funcName,
+                    dukFrame.fileName,
+                    dukFrame.lineNumber,
+                    0);
+
+                frames.push(frame);
+            }
+            
+            this.log(`Sending ${frames.length} frames.`);
+
+            response.body = {
+                stackFrames: frames
+            };
+
+            this.sendResponse(response);
+        });
     }
     
     protected scopesRequest(response : DebugProtocol.ScopesResponse, args : DebugProtocol.ScopesArguments) : void {
+        this.log("scopesRequest");
+
         const frameReference = args.frameId;
         const scopes = new Array<Scope>();
         
@@ -79,6 +252,8 @@ class DuktapeDebugSession extends DebugSession {
     }
     
     protected variablesRequest(response : DebugProtocol.VariablesResponse, args : DebugProtocol.VariablesArguments) : void {
+        this.log("variablesRequest");
+
         const variables = [];
         
         response.body = {
@@ -89,16 +264,20 @@ class DuktapeDebugSession extends DebugSession {
     }
     
     protected continueRequest(response : DebugProtocol.ContinueResponse, args : DebugProtocol.ContinueArguments) : void {
-        this.sendResponse(response);
-        this.sendEvent(new TerminatedEvent());
+        this.log("continueRequest");
+
+        this._duk.resume(() => {
+            this.sendResponse(response);
+        });
     }
     
     protected nextRequest(response : DebugProtocol.NextResponse, args : DebugProtocol.NextArguments) : void {
-        this.sendResponse(response);
-        this.sendEvent(new TerminatedEvent());
+        this.log("nextRequest");
     }
     
     protected evaluateRequest(response : DebugProtocol.EvaluateResponse, args : DebugProtocol.EvaluateArguments) : void {
+        this.log("evaluateRequest");
+
         response.body = {
             result: "Something evaluated",
             variablesReference: 0
